@@ -41,11 +41,11 @@ pico_set_program_name(ov7670 "ov7670")
 pico_set_program_version(ov7670 "0.1")
 
 # Generate PIO header
-pico_generate_pio_header(ov7670 ${CMAKE_CURRENT_LIST_DIR}/ov7670.pio)
+# pico_generate_pio_header(ov7670 ${CMAKE_CURRENT_LIST_DIR}/ov7670.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(ov7670 0)
-pico_enable_stdio_usb(ov7670 0)
+pico_enable_stdio_usb(ov7670 1)
 
 # Add the standard library to the build
 target_link_libraries(ov7670

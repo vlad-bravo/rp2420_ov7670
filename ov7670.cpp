@@ -5,6 +5,8 @@
 #include "hardware/pwm.h"
 #include "hardware/i2c.h"
 
+#include "ov7670.h"
+
 // --- Настройки пинов ---
 #define XCLK_PIN        26
 #define PCLK_PIN        27
@@ -29,9 +31,22 @@ volatile int line_counter = 0;
 volatile bool line_ready = false;
 volatile bool frame_done = false;
 
-// Вызовы пользователя
-extern void process_line(uint8_t* line_buf);
-extern void process_frame();
+// Глобальная переменная для подсчета кадров
+static uint32_t frame_counter = 0;
+
+// Вызывается после получения каждой строки
+void process_line(uint8_t* line_buf) {
+    // Обработка строки (пусто)
+}
+
+// Вызывается после получения всех 480 строк кадра
+void process_frame() {
+    frame_counter++;
+    
+    // Прямая запись сырых байт переменной frame_counter в stdout (USB UART)
+    // sizeof(frame_counter) для uint32_t равно 4 байтам
+    fwrite(&frame_counter, sizeof(frame_counter), 1, stdout);
+}
 
 // --- I2C для OV7670 ---
 void ov7670_write_reg(uint8_t reg, uint8_t val) {
@@ -41,14 +56,24 @@ void ov7670_write_reg(uint8_t reg, uint8_t val) {
 
 void ov7670_init() {
     // Сброс
-    ov7670_write_reg(0x12, 0x80);
+    ov7670_write_reg(REG_COM7, COM7_RESET); //Reset SCCB
     sleep_ms(100);
     
-    // Настройка VGA и формата YUV422
-    ov7670_write_reg(0x12, 0x00); // QVGA=0, YUV422
-    ov7670_write_reg(0x3D, 0x08); // COM13 - Включить YUYV формат (Y первый)
-    ov7670_write_reg(0x40, 0xD0); // COM15 - Полный диапазон выхода (0-255)
-    // При необходимости добавьте другие регистры для частоты и баланса белого
+    ov7670_write_reg(REG_TSLB, TSLB_YLAST);	/* OV */
+    ov7670_write_reg(REG_COM7, COM7_FMT_VGA);	/* VGA */
+  /*
+    Set the hardware window.  These values from OV don't entirely
+    make sense - hstop is less than hstart.  But they work...
+  */
+    ov7670_write_reg(REG_CLKRC, 0x1F);
+
+    ov7670_write_reg(REG_HSTART, 0x13);
+    ov7670_write_reg(REG_HSTOP, 0x01);
+    ov7670_write_reg(REG_HREF, 0x36);
+    ov7670_write_reg(REG_SCALING_XSC, 0x3a);
+    ov7670_write_reg(REG_SCALING_YSC, 0x35);
+    ov7670_write_reg(REG_SCALING_DCWCTR, 0x11);
+    ov7670_write_reg(REG_SCALING_PCLK_DIV, 0xF0);
 }
 
 // --- Генерация XCLK 8 MHz через PWM ---
@@ -62,6 +87,72 @@ void init_xclk() {
     pwm_set_chan_level(slice, pwm_gpio_to_channel(XCLK_PIN), 8); // Скважность 50%
     pwm_set_enabled(slice, true);
 }
+
+void ov7670_capture_program_init(PIO pio, uint sm, uint offset, uint data_pin_base, uint pclk_pin, uint href_pin) {
+    
+    // 1. Настройка 6 пинов данных (GP16..GP21) на вход для PIO
+    for (uint i = 0; i < 6; i++) {
+        pio_gpio_init(pio, data_pin_base + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin_base, 6, false);
+
+    // 2. Настройка пина PCLK (GP27) на вход для PIO
+    pio_gpio_init(pio, pclk_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pclk_pin, 1, false);
+
+    // 3. Настройка пина HREF (GP28) на вход для PIO
+    pio_gpio_init(pio, href_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, href_pin, 1, false);
+
+    // 4. Конфигурация State Machine
+    pio_sm_config c = pio_get_default_sm_config();
+    
+    sm_config_set_wrap(&c, offset + 0, offset + 9);
+    sm_config_set_in_pins(&c, data_pin_base);  // База для инструкции 'in'
+    sm_config_set_jmp_pin(&c, href_pin);       // Пин для инструкции 'jmp pin'
+    
+    // Настройка сдвига:
+    // - Autopush включен: как только ISR заполнится 32 битами, он автоматически отправится в FIFO
+    // - Порог Autopush = 32 (4 пикселя * 8 бит)
+    // - Сдвиг вправо (ISR сдвигается вправо, младшие биты заполняются последними)
+    sm_config_set_in_shift(&c, true, true, 32);
+    
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
+
+// Массив скомпилированных инструкций PIO
+// Логика работы:
+// 0: wait 1 gpio 28      (Ждем HREF = 1)
+// 1: set x, 4            (Счетчик на 4 пикселя для заполнения 32-битного слова: 4 * 8 бит = 32)
+// 2: wait 1 gpio 27      (Ждем PCLK = 1, начало байта Y)
+// 3: in pins, 6          (Считываем 6 бит данных D0-D5)
+// 4: in null, 2          (Добавляем 2 нулевых бита, чтобы сдвинуть 6 бит влево и получить 8-битный байт)
+// 5: wait 0 gpio 27      (Ждем спад PCLK)
+// 6: wait 1 gpio 27      (Ждем PCLK = 1, начало байта U/V - игнорируем)
+// 7: wait 0 gpio 27      (Ждем спад PCLK)
+// 8: jmp x--, 2          (Повторяем 4 раза, заполняя 32-битный регистр ISR)
+// 9: jmp pin, 1          (Если HREF еще 1, прыгаем на начало. Иначе - строка закончилась)
+static const uint16_t ov7670_capture_program_instructions[] = {
+    0x20dc, //  0: wait   1 gpio, 28
+    0xe424, //  1: set    x, 4
+    0x20db, //  2: wait   1 gpio, 27
+    0x4006, //  3: in     pins, 6
+    0x4062, //  4: in     null, 2
+    0x209b, //  5: wait   0 gpio, 27
+    0x20db, //  6: wait   1 gpio, 27
+    0x209b, //  7: wait   0 gpio, 27
+    0x0042, //  8: jmp    x--, 2
+    0x00c1  //  9: jmp    pin, 1
+};
+
+const struct pio_program ov7670_capture_program = {
+    .instructions = ov7670_capture_program_instructions,
+    .length = 10,
+    .origin = 0,
+};
 
 // --- Настройка PIO ---
 void init_pio_capture(PIO pio, uint *sm) {

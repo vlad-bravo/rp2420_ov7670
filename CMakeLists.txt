@@ -16,7 +16,7 @@ else()
     set(USERHOME $ENV{HOME})
 endif()
 set(sdkVersion 2.2.0)
-set(toolchainVersion 15_2_Rel1)
+set(toolchainVersion 14_2_Rel1)
 set(picotoolVersion 2.2.0-a4)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
@@ -59,9 +59,7 @@ target_include_directories(ov7670 PRIVATE
 # Add any user requested libraries
 target_link_libraries(ov7670 
         hardware_i2c
-        hardware_dma
         hardware_pwm
-        hardware_pio
         )
 
 pico_add_extra_outputs(ov7670)

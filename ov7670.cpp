@@ -12,7 +12,11 @@
 #define PCLK_PIN        27
 #define HREF_PIN        28
 #define VSYNC_PIN       23
-#define DATA_BASE_PIN   16 // D0-D7 подключены к GP2-GP9
+#define DATA_BASE_PIN   16
+
+#define TEST0_PIN       0
+#define TEST1_PIN       1
+#define LED_PIN         25
 
 #define I2C_SDA_PIN     14
 #define I2C_SCL_PIN     15
@@ -46,12 +50,16 @@ void process_frame() {
     // Прямая запись сырых байт переменной frame_counter в stdout (USB UART)
     // sizeof(frame_counter) для uint32_t равно 4 байтам
     fwrite(&frame_counter, sizeof(frame_counter), 1, stdout);
+
+    gpio_put(TEST0_PIN, true);
+    sleep_us(1);
+    gpio_put(TEST0_PIN, false);
 }
 
 // --- I2C для OV7670 ---
 void ov7670_write_reg(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
-    i2c_write_blocking(i2c0, OV7670_ADDR, buf, 2, false);
+    i2c_write_blocking(i2c1, OV7670_ADDR, buf, 2, false);
 }
 
 void ov7670_init() {
@@ -61,16 +69,17 @@ void ov7670_init() {
     
     ov7670_write_reg(REG_TSLB, TSLB_YLAST);	/* OV */
     ov7670_write_reg(REG_COM7, COM7_FMT_VGA);	/* VGA */
-  /*
-    Set the hardware window.  These values from OV don't entirely
-    make sense - hstop is less than hstart.  But they work...
-  */
     ov7670_write_reg(REG_CLKRC, 0x1F);
 
     ov7670_write_reg(REG_HSTART, 0x13);
     ov7670_write_reg(REG_HSTOP, 0x01);
     ov7670_write_reg(REG_HREF, 0x36);
-    ov7670_write_reg(REG_SCALING_XSC, 0x3a);
+    // (SCALING_XSC[7], SCALING_YSC[7]):
+    // 00: no test output
+    // 01: shifting 1
+    // 10: 8-bar color bar
+    // 11: fade to gray color bar
+    ov7670_write_reg(REG_SCALING_XSC, 0xba); // 0x3a
     ov7670_write_reg(REG_SCALING_YSC, 0x35);
     ov7670_write_reg(REG_SCALING_DCWCTR, 0x11);
     ov7670_write_reg(REG_SCALING_PCLK_DIV, 0xF0);
@@ -198,6 +207,10 @@ void dma_handler() {
     } else {
         frame_done = true; // Кадр полностью получен
     }
+
+                gpio_put(TEST1_PIN, true);
+                sleep_us(1);
+                gpio_put(TEST1_PIN, false);
 }
 
 void init_dma(PIO pio, uint sm) {
@@ -218,11 +231,11 @@ int main() {
     stdio_init_all();
 
     // Инициализация I2C и камеры
-    i2c_init(i2c0, 100000);
+    i2c_init(i2c1, 100000);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA_PIN);
-    gpio_pull_up(I2C_SCL_PIN);
+    //gpio_pull_up(I2C_SDA_PIN);
+    //gpio_pull_up(I2C_SCL_PIN);
     
     init_xclk(); // Запускаем 8 MHz
     ov7670_init();
@@ -237,10 +250,20 @@ int main() {
     init_pio_capture(pio, &sm);
     init_dma(pio, sm);
 
+    // Инициализация TEST
+    gpio_init(TEST0_PIN);
+    gpio_set_dir(TEST0_PIN, GPIO_OUT);
+    gpio_init(TEST1_PIN);
+    gpio_set_dir(TEST1_PIN, GPIO_OUT);
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+
     while (true) {
         // Ждем начала нового кадра (VSYNC: низкий уровень -> высокий уровень)
         while (gpio_get(VSYNC_PIN) == 1);
+        gpio_put(LED_PIN, false);
         while (gpio_get(VSYNC_PIN) == 0);
+        gpio_put(LED_PIN, true);
 
         line_counter = 0;
         frame_done = false;
@@ -254,8 +277,10 @@ int main() {
             true
         );
 
+/*
         // Обработка данных в основном цикле
         while (!frame_done) {
+//*/
             if (line_ready) {
                 line_ready = false;
                 
@@ -267,9 +292,9 @@ int main() {
                     frame_done = true;
                 }
             }
-            // Здесь можно выполнять другие фоновые задачи
-            tight_loop_contents();
+/*
         }
+//*/
 
         // Все 480 строк получены
         process_frame();

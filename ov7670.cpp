@@ -12,20 +12,21 @@
 #define VSYNC_PIN       23
 #define DATA_BASE_PIN   16
 
-#define TEST0_PIN       0
-#define TEST1_PIN       1
+#define TEST0_PIN       29
+#define TEST1_PIN       4
 #define LED_PIN         25
 #define WS2812_PIN      23
 #define USERKEY_PIN     24
 
-#define I2C_SDA_PIN     14
-#define I2C_SCL_PIN     15
+#define I2C_SDA_PIN     0
+#define I2C_SCL_PIN     1
 
 #define OV7670_ADDR     0x21
 
 // --- Буферы и указатели ---
 uint8_t buffer1[640];
 uint8_t buffer2[640];
+uint8_t preamble[4]; // 0 - marker, 1 - packet type, 2 - msb, 3 - lsb
 
 uint8_t* capture_buf = buffer1; // Указатель для накопления
 uint8_t* process_buf = buffer2; // Указатель для обработки
@@ -39,7 +40,13 @@ static uint8_t frame_counter = 0;
 
 // Вызывается после получения каждой строки
 void process_line() {
-    // Обработка строки (пусто)
+    for (uint8_t i = 6; i<17; i++) // Цикл по 22 кусочкам строки
+    {
+        preamble[1] = '0' + i;
+        fwrite(&preamble[0], 4, 1, stdout);
+        fwrite(&process_buf[i*29], 29, 1, stdout);
+        fflush(stdout);
+    }
 }
 
 // Вызывается после получения всех 480 строк кадра
@@ -47,9 +54,9 @@ void process_frame() {
     
     // Прямая запись сырых байт переменной frame_counter в stdout (USB UART)
     // sizeof(frame_counter) для uint32_t равно 4 байтам
-    fwrite(&frame_counter, sizeof(frame_counter), 1, stdout);
-    fwrite(&process_buf, sizeof(buffer1), 1, stdout);
-    puts("");
+    //fwrite(&frame_counter, sizeof(frame_counter), 1, stdout);
+    //fwrite(&process_buf[0], 15, 1, stdout);
+    //fflush(stdout);
 
     frame_counter++;
 
@@ -61,7 +68,7 @@ void process_frame() {
 // --- I2C для OV7670 ---
 void ov7670_write_reg(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
-    i2c_write_blocking(i2c1, OV7670_ADDR, buf, 2, false);
+    i2c_write_blocking(i2c0, OV7670_ADDR, buf, 2, false);
 }
 
 void ov7670_init() {
@@ -81,8 +88,8 @@ void ov7670_init() {
     // 01: shifting 1
     // 10: 8-bar color bar
     // 11: fade to gray color bar
-    ov7670_write_reg(REG_SCALING_XSC, 0xba); // 0x3a
-    ov7670_write_reg(REG_SCALING_YSC, 0x35);
+    ov7670_write_reg(REG_SCALING_XSC, 0x3a); // 0x3a
+    ov7670_write_reg(REG_SCALING_YSC, 0x35); // 0x35
     ov7670_write_reg(REG_SCALING_DCWCTR, 0x11);
     ov7670_write_reg(REG_SCALING_PCLK_DIV, 0xF0);
 }
@@ -103,7 +110,7 @@ int main() {
     stdio_init_all();
 
     // Инициализация I2C и камеры
-    i2c_init(i2c1, 100000);
+    i2c_init(i2c0, 100000);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
     //gpio_pull_up(I2C_SDA_PIN);
@@ -128,26 +135,35 @@ int main() {
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
+    preamble[0] = 0xfc;
+
     while (true) {
 
-        while (gpio_get(PCLK_PIN) == 0);
+        while (gpio_get(PCLK_PIN));
         if (gpio_get(VSYNC_PIN))
         {
             if (y>0)
             {
                 y = 0;
                 process_frame();
-                gpio_put(TEST1_PIN, true);
-                sleep_us(1);
-                gpio_put(TEST1_PIN, false);
             }
         }
         else
         {
             if (gpio_get(HREF_PIN))
             {
-                if (x & 1) capture_buf[x>>1] = gpio_get(DATA_BASE_PIN);
+                //gpio_put(TEST1_PIN, true);
+                if (~x & 1)
+                    capture_buf[x>>1] = (
+                        gpio_get(DATA_BASE_PIN+5)<<7
+                        | gpio_get(DATA_BASE_PIN+4)<<6
+                        | gpio_get(DATA_BASE_PIN+3)<<5
+                        //| gpio_get(DATA_BASE_PIN+2)<<4
+                        //| gpio_get(DATA_BASE_PIN+1)<<3
+                        //| gpio_get(DATA_BASE_PIN)<<2
+                    );
                 x++;
+                //gpio_put(TEST1_PIN, false);
             }
             else
             {
@@ -157,6 +173,8 @@ int main() {
                     x = 0;
                     // Сохранить номер полученной строки
                     process_y = y;
+                    preamble[2] = y>>8;
+                    preamble[3] = y;
                     y++;
                     // Поменять указатели на буферы
                     temp_buf = capture_buf;
@@ -167,6 +185,6 @@ int main() {
                 }
             }
         }
-        while (gpio_get(PCLK_PIN) == 1);
+        while (gpio_get(PCLK_PIN) == 0);
     }
 }

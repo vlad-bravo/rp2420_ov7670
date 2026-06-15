@@ -44,7 +44,7 @@ static uint8_t frame_counter = 0;
 
 // Вызывается после получения каждой строки
 void process_line() {
-    for (uint8_t i = 4; i<18; i++) // Цикл по 22 кусочкам строки
+    for (uint8_t i = 0; i<22; i++) // Цикл по 22 кусочкам строки
     {
         preamble[1] = '0' + i;
         fwrite(&preamble[0], 4, 1, stdout);
@@ -93,9 +93,12 @@ void ov7670_init() {
     ov7670_write_reg(REG_COM7, COM7_FMT_VGA);	/* VGA */
     ov7670_write_reg(REG_CLKRC, 0x1F);
 
-    ov7670_write_reg(REG_HSTART, 0x13);
-    ov7670_write_reg(REG_HSTOP, 0x01);
-    ov7670_write_reg(REG_HREF, 0x36);
+    ov7670_write_reg(REG_HSTART, 0x13); // 0x13 (0x11) 0x1D
+    ov7670_write_reg(REG_HSTOP, 0x01);  // 0x01 (0x61) 0x2C
+    ov7670_write_reg(REG_HREF, 0x36);   // 0x36 (0x80) 0x36
+    ov7670_write_reg(REG_VSTART, 0x02); // 0x02 (0x03) 0x44
+    ov7670_write_reg(REG_VSTOP, 0x7A);  // 0x7A (0x7B) 0x50
+    ov7670_write_reg(REG_VREF, 0x0A);   // 0x0A (0x00) 0x08
     // (SCALING_XSC[7], SCALING_YSC[7]):
     // 00: no test output
     // 01: shifting 1
